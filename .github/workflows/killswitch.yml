@@ -2,7 +2,7 @@ name: killswitch
 
 on:
   schedule:
-    - cron: "*/5 * * * *"      # GitHub's minimum interval; each run loops internally (see LOOP_SECONDS)
+    - cron: "*/5 * * * *"      # backup only: restarts the chain if it ever breaks
   workflow_dispatch:            # lets you start it by hand from the Actions tab
 
 # Runs never overlap: a new run waits for the current one instead of racing it.
@@ -27,6 +27,15 @@ jobs:
           cache: pip
 
       - run: pip install -r requirements.txt
+
+      # Self-retrigger: queue the next run NOW. It waits (concurrency group) until this run
+      # ends, then starts immediately, so the chain never depends on GitHub's flaky cron.
+      # Only one run can wait at a time, so this can never snowball.
+      - name: Queue next run
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run killswitch.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
 
       - name: Run kill switch
         env:
