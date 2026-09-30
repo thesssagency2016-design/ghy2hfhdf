@@ -1,0 +1,56 @@
+name: killswitch
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"      # GitHub's minimum interval; each run loops internally (see LOOP_SECONDS)
+  workflow_dispatch:            # lets you start it by hand from the Actions tab
+
+# Runs never overlap: a new run waits for the current one instead of racing it.
+concurrency:
+  group: killswitch
+  cancel-in-progress: false
+
+permissions:
+  actions: write                # only used by the keepalive step below
+  contents: read
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run kill switch
+        env:
+          # MODE comes from a repo VARIABLE (Settings > Secrets and variables > Actions > Variables).
+          # Unset or anything other than "live" = test mode (dry run).
+          MODE: ${{ vars.MODE || 'test' }}
+          LOOP_SECONDS: "285"
+          POLL_EVERY: "10"
+          NTFY_CMD_TOPIC: ${{ secrets.NTFY_CMD_TOPIC }}
+          NTFY_OUT_TOPIC: ${{ secrets.NTFY_OUT_TOPIC }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          TRIGGER_WORD: ${{ secrets.TRIGGER_WORD }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          NETLIFY_TOKEN: ${{ secrets.NETLIFY_TOKEN }}
+          SUPABASE_TOKEN_AC1: ${{ secrets.SUPABASE_TOKEN_AC1 }}
+          SUPABASE_TOKEN_AC2: ${{ secrets.SUPABASE_TOKEN_AC2 }}
+        run: python killswitch.py
+
+      # Public repos get their schedule auto-disabled after 60 days without repo activity.
+      # Re-enabling the workflow resets that clock. Best effort, never fails the run.
+      - name: Keepalive
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable killswitch.yml --repo "$GITHUB_REPOSITORY"
