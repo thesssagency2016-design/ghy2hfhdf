@@ -35,6 +35,7 @@ OUT_TOPIC = env("NTFY_OUT_TOPIC")
 NTFY_TOKEN = env("NTFY_TOKEN")
 TRIGGER = env("TRIGGER_WORD", "muttonsoup").lower()
 TEST_TRIGGER = env("TEST_TRIGGER_WORD", "muttontest").lower()
+PING_WORD = env("PING_WORD", "shop open").lower()  # "shop open?" (trailing ?/! ignored)
 LIVE = env("MODE", "test").lower() == "live"
 LOOKBACK = env("LOOKBACK", "30m")            # how far back to read ntfy history
 SESSION_TTL = int(env("SESSION_TTL", "600"))  # max gap (s) between messages of one session
@@ -250,6 +251,8 @@ def build_providers():
 # --------------------------------------------------------------------------- conversation
 def step(state, ctx, text, flavours):
     """Pure state machine. Returns (state, ctx, actions)."""
+    if text.rstrip("?! ") == PING_WORD:  # "shop open?" works anytime, never disturbs a session
+        return state, ctx, [("ping",)]
     if text in (TRIGGER, TEST_TRIGGER):
         dry = (text == TEST_TRIGGER) or not LIVE
         mode = "TEST MODE - nothing will be deleted" if dry else "LIVE"
@@ -367,6 +370,19 @@ def do_execute(providers, spec, out):
     out(f"[{tag}] done.")
 
 
+def do_ping(providers, out):
+    lines = [f"Shop is OPEN. [{'LIVE' if LIVE else 'TEST MODE'}] {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}"]
+    for name, p in providers.items():
+        try:
+            items, _ = p.list()  # read-only: proves the token works
+            lines.append(f"- {name}: ok ({len(items)} projects)")
+        except Exception as e:
+            lines.append(f"- {name}: PROBLEM {str(e)[:120]}")
+    if not providers:
+        lines.append("- no providers loaded (check secrets)")
+    out("\n".join(lines))
+
+
 def perform(actions, msg_id, providers):
     first = [msg_id]
 
@@ -378,6 +394,8 @@ def perform(actions, msg_id, providers):
             out(a[1])
         elif a[0] == "menu":
             send_menu(providers, out)
+        elif a[0] == "ping":
+            do_ping(providers, out)
         elif a[0] == "execute":
             do_execute(providers, a[1], out)
 
@@ -393,7 +411,7 @@ def process(cmds, acked, providers, now):
         state, ctx, actions = step(state, ctx, text, list(providers))
         if not actions or m["id"] in acked:
             continue
-        if now - t > STALE_AFTER:
+        if now - t > STALE_AFTER and actions[0][0] != "ping":
             say("Ignored an old command (too stale to run safely). Start again.", m["id"])
             state, ctx = "IDLE", {}
             continue
