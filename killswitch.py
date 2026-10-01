@@ -31,7 +31,7 @@ def env(name, default=""):
 
 NTFY_SERVER = env("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 CMD_TOPIC = env("NTFY_CMD_TOPIC")
-OUT_TOPIC = env("NTFY_OUT_TOPIC")
+OUT_TOPIC = env("NTFY_OUT_TOPIC") or CMD_TOPIC  # same topic = single "text the bot" channel
 NTFY_TOKEN = env("NTFY_TOKEN")
 TRIGGER = env("TRIGGER_WORD", "muttonsoup").lower()
 TEST_TRIGGER = env("TEST_TRIGGER_WORD", "muttontest").lower()
@@ -95,6 +95,14 @@ def ntfy_poll(topic):
     return msgs
 
 
+BOT_TAG = "ksbot"
+
+
+def is_bot(m):
+    """True for messages the bot itself published (so it never reads its own replies as commands)."""
+    return BOT_TAG in (m.get("tags") or []) or (m.get("title") or "").lower().startswith("killswitch")
+
+
 def say(text, ack_id=None):
     """Send text to the OUT topic (chunked). The first chunk carries the ack tag."""
     chunks, cur = [], ""
@@ -106,9 +114,8 @@ def say(text, ack_id=None):
     chunks.append(cur)
     for c in chunks:
         headers = {"Title": "killswitch" + (" LIVE" if LIVE else " test")}
-        if ack_id:
-            headers["Tags"] = f"ack_{ack_id}"
-            ack_id = None
+        headers["Tags"] = BOT_TAG + (f",ack_{ack_id}" if ack_id else "")
+        ack_id = None
         r = requests.post(f"{NTFY_SERVER}/{OUT_TOPIC}", data=c.strip().encode("utf-8"),
                           headers=ntfy_headers(headers), timeout=20)
         r.raise_for_status()  # if this fails we abort BEFORE doing anything destructive
@@ -419,17 +426,20 @@ def process(cmds, acked, providers, now):
 
 
 def run_once(providers):
-    cmds = ntfy_poll(CMD_TOPIC)
+    msgs = ntfy_poll(CMD_TOPIC)
+    outs = msgs if OUT_TOPIC == CMD_TOPIC else None
+    cmds = [m for m in msgs if not is_bot(m)]
     if not cmds:
         return
-    outs = ntfy_poll(OUT_TOPIC)
-    acked = {t[4:] for m in outs for t in m.get("tags", []) if t.startswith("ack_")}
+    if outs is None:
+        outs = ntfy_poll(OUT_TOPIC)
+    acked = {t[4:] for m in outs for t in (m.get("tags") or []) if t.startswith("ack_")}
     process(cmds, acked, providers, time.time())
 
 
 def main():
-    if not CMD_TOPIC or not OUT_TOPIC:
-        sys.exit("NTFY_CMD_TOPIC and NTFY_OUT_TOPIC must be set")
+    if not CMD_TOPIC:
+        sys.exit("NTFY_CMD_TOPIC must be set (NTFY_OUT_TOPIC is optional; omit it to use one channel)")
     providers = build_providers()
     log(f"mode={'LIVE' if LIVE else 'TEST'} providers={list(providers)}")
     end = time.time() + LOOP_SECONDS
